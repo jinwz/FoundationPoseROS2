@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# FoundationPose subrepo (clone separately or add as submodule)
+FoundationPose/
+
+# Large model file (154MB)
+sam2.1_b.pt
+
+# Generated images
+masks.png
+
+# Conversation / session logs
+conversations/
+session-*.md
+
+# Partial downloads
+*.partial
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# ROS2 build
+install/
+log/
+build/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

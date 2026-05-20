@@ -20,6 +20,8 @@ import os
 import tkinter as tk
 from tkinter import Listbox, END, Button
 import glob
+from std_msgs.msg import String
+from visualization_msgs.msg import Marker
 
 # Save the original `__init__` and `register` methods
 original_init = FoundationPose.__init__
@@ -147,8 +149,12 @@ class PoseEstimationNode(Node):
         # Initialize SAM2 model
         self.seg_model = SAM("sam2.1_b.pt")
 
+        # Subscriber to dynamically add a mesh file at runtime (publish .obj path to /add_mesh)
+        self.add_mesh_sub = self.create_subscription(String, '/add_mesh', self.add_mesh_callback, 10)
+
         self.pose_estimations = {}  # Dictionary to track multiple pose estimations
         self.pose_publishers = {}  # Dictionary to store publishers for each object
+        self.marker_publishers = {}  # Dictionary to store marker publishers for each object
         self.tracked_objects = []  # Initialize to store selected objects' masks
         self.i = 0
 
@@ -326,7 +332,7 @@ class PoseEstimationNode(Node):
                 pose = pose_est.track_one(rgb=color, depth=depth, K=self.cam_K, iteration=args.track_refine_iter)
                 center_pose = pose @ np.linalg.inv(to_origin)
 
-                self.publish_pose_stamped(center_pose, f"object_{idx}_frame", f"/Current_OBJ_position_{idx+1}")
+                self.publish_pose_stamped(center_pose, f"object_{idx}_frame", f"/Current_OBJ_position_{idx+1}", idx)
 
                 visualization_image = self.visualize_pose(visualization_image, center_pose, idx)
             else:
@@ -342,38 +348,68 @@ class PoseEstimationNode(Node):
         vis = draw_xyz_axis(vis, ob_in_cam=center_pose, scale=0.1, K=self.cam_K, thickness=3, transparency=0, is_input_rgb=True)
         return vis
 
-    def publish_pose_stamped(self, center_pose, frame_id, topic_name):
+    def publish_pose_stamped(self, center_pose, frame_id, topic_name, idx):
         if topic_name not in self.pose_publishers:
             self.pose_publishers[topic_name] = self.create_publisher(PoseStamped, topic_name, 10)
-        
-        # Convert the center_pose matrix to a PoseStamped message
-        pose_stamped_msg = PoseStamped()
-        pose_stamped_msg.header.stamp = self.get_clock().now().to_msg()
-        pose_stamped_msg.header.frame_id = frame_id
+        if topic_name not in self.marker_publishers:
+            self.marker_publishers[topic_name] = self.create_publisher(Marker, f"{topic_name}_mesh", 10)
 
         # Convert center_pose to the pose format
         position = center_pose[:3, 3]
         rotation_matrix = center_pose[:3, :3]
         quaternion = R.from_matrix(rotation_matrix).as_quat()
 
-        # Combine position and quaternion into a single array
         pose_array = np.concatenate((position, quaternion))
-
-        # Apply transformation to convert from camera to base frame
         transformed_pose = transformation(pose_array)
 
-        # Populate PoseStamped message with transformed pose
+        # PoseStamped (for RViz PoseStamped display)
+        pose_stamped_msg = PoseStamped()
+        pose_stamped_msg.header.stamp = self.get_clock().now().to_msg()
+        pose_stamped_msg.header.frame_id = "map"
         pose_stamped_msg.pose.position.x = transformed_pose[0]
         pose_stamped_msg.pose.position.y = transformed_pose[1]
         pose_stamped_msg.pose.position.z = transformed_pose[2]
-
         pose_stamped_msg.pose.orientation.w = transformed_pose[3]
         pose_stamped_msg.pose.orientation.x = transformed_pose[4]
         pose_stamped_msg.pose.orientation.y = transformed_pose[5]
         pose_stamped_msg.pose.orientation.z = transformed_pose[6]
-
-        # Publish the transformed pose
         self.pose_publishers[topic_name].publish(pose_stamped_msg)
+
+        # Marker (3D bounding box for RViz)
+        marker = Marker()
+        marker.header.stamp = pose_stamped_msg.header.stamp
+        marker.header.frame_id = "map"
+        marker.ns = topic_name
+        marker.id = 0
+        marker.type = Marker.CUBE
+        marker.action = Marker.ADD
+        marker.pose = pose_stamped_msg.pose
+        if idx < len(self.bboxes):
+            bbox = self.bboxes[idx]
+            marker.scale.x = bbox[1,0] - bbox[0,0]
+            marker.scale.y = bbox[1,1] - bbox[0,1]
+            marker.scale.z = bbox[1,2] - bbox[0,2]
+        marker.color.a = 0.4
+        marker.color.r = 0.2
+        marker.color.g = 0.6
+        marker.color.b = 1.0
+        self.marker_publishers[topic_name].publish(marker)
+
+    def add_mesh_callback(self, msg):
+        mesh_path = msg.data
+        if not os.path.exists(mesh_path):
+            self.get_logger().error(f"Mesh file not found: {mesh_path}")
+            return
+        try:
+            mesh = trimesh.load(mesh_path)
+            self.mesh_files.append(mesh_path)
+            self.meshes.append(mesh)
+            to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+            self.bounds.append((to_origin, extents))
+            self.bboxes.append(np.stack([-extents/2, extents/2], axis=0).reshape(2, 3))
+            self.get_logger().info(f"Added mesh: {mesh_path} ({len(mesh.vertices)} vertices)")
+        except Exception as e:
+            self.get_logger().error(f"Failed to load {mesh_path}: {e}")
 
 def main(args=None):
     source_directory = "demo_data"
