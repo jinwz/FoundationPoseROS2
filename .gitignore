@@ -1,18 +1,7 @@
-# FoundationPose: model weights (download separately)
-FoundationPose/weights/
-!FoundationPose/weights/README.md
-
-# FoundationPose: external C++ libs (used at build time only)
-FoundationPose/eigen-3.4.0/
-FoundationPose/pybind11/
-
 # Python
 __pycache__/
 *.pyc
 *.pyo
-
-# Large model file (154MB)
-sam2.1_b.pt
 
 # Generated images
 masks.png
