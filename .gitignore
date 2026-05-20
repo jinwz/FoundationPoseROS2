@@ -11,16 +11,14 @@ __pycache__/
 *.pyc
 *.pyo
 
-
 # Large model file (154MB)
 sam2.1_b.pt
 
 # Generated images
 masks.png
 
-# Conversation / session logs
-conversations/
-session-*.md
+# Compiled extensions (rebuilt by setup_env.sh)
+*.so
 
 # Partial downloads
 *.partial
@@ -33,7 +31,6 @@ dist/
 # ROS2 build
 install/
 log/
-build/
 
 # IDE
 .vscode/
