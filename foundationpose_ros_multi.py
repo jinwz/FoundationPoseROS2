@@ -404,6 +404,9 @@ class PoseEstimationNode(Node):
             self.get_logger().info(f"Already added, ignored: {mesh_path}")
             return
         try:
+            if self.meshes:
+                self.get_logger().info("New mesh added during tracking, will re-enter selection on next frame")
+                self.i = 0
             mesh = trimesh.load(mesh_path)
             self.mesh_files.append(mesh_path)
             self.meshes.append(mesh)
