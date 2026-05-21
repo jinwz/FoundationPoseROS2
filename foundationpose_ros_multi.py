@@ -400,6 +400,9 @@ class PoseEstimationNode(Node):
         if not os.path.exists(mesh_path):
             self.get_logger().error(f"Mesh file not found: {mesh_path}")
             return
+        if mesh_path in self.mesh_files:
+            self.get_logger().info(f"Already added, ignored: {mesh_path}")
+            return
         try:
             mesh = trimesh.load(mesh_path)
             self.mesh_files.append(mesh_path)
