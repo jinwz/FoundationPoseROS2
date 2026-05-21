@@ -179,8 +179,14 @@ class PoseEstimationNode(Node):
         depth = cv2.resize(self.depth_image, (W, H), interpolation=cv2.INTER_NEAREST)
         depth[(depth < 0.1) | (depth >= np.inf)] = 0
 
+        self.get_logger().info(f"process_images: i={self.i}", throttle_duration_sec=2.0)
         if self.i == 0:
-            cv2.destroyWindow('Pose Estimation & Tracking')
+            self.get_logger().info("Entering SAM2 selection dialog (i=0)")
+            try:
+                cv2.destroyWindow('Pose Estimation & Tracking')
+            except cv2.error:
+                pass
+            cv2.waitKey(50)
             masks_accepted = False
 
             while not masks_accepted:
@@ -292,7 +298,9 @@ class PoseEstimationNode(Node):
                 refresh_dialog_box()
 
                 while True:
-                    key = cv2.waitKey(0)  # Wait for a key event
+                    key = cv2.waitKey(100)  # 100ms timeout to allow signal handling
+                    if key == -1:
+                        continue
                     if key == ord('r'):
                         self.get_logger().info("Redoing mask selection.")
                         break  # Break the inner loop to redo mask selection
@@ -313,10 +321,8 @@ class PoseEstimationNode(Node):
                             # Confirm the selection and update the actual pose_estimations
                             self.pose_estimations = temporary_pose_estimations
 
-                            # Remove the corresponding meshes and bounds from the original lists only after confirmation
-                            selected_indices = sorted(temporary_pose_estimations.keys(), reverse=True)
-                            self.meshes = [self.meshes[idx] for idx in selected_indices]
-                            self.bounds = [self.bounds[idx] for idx in selected_indices]
+                            # Meshes for selected/skipped objects were already pop(0)'d in click_event / skip handler.
+                            # Remaining meshes stay in self.meshes for the next dialog session.
 
                             masks_accepted = True  # Exit the outer loop if masks are accepted
                             break
@@ -401,22 +407,21 @@ class PoseEstimationNode(Node):
         if not os.path.exists(mesh_path):
             self.get_logger().error(f"Mesh file not found: {mesh_path}")
             return
-        if mesh_path in self.mesh_files:
-            self.get_logger().info(f"Already added, ignored: {mesh_path}")
-            return
-        try:
-            if self.meshes:
-                self.get_logger().info("New mesh added during tracking, will re-enter selection on next frame")
-                self.i = 0
-            mesh = trimesh.load(mesh_path)
-            self.mesh_files.append(mesh_path)
-            self.meshes.append(mesh)
-            to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
-            self.bounds.append((to_origin, extents))
-            self.bboxes.append(np.stack([-extents/2, extents/2], axis=0).reshape(2, 3))
-            self.get_logger().info(f"Added mesh: {mesh_path} ({len(mesh.vertices)} vertices)")
-        except Exception as e:
-            self.get_logger().error(f"Failed to load {mesh_path}: {e}")
+        if mesh_path not in self.mesh_files:
+            try:
+                mesh = trimesh.load(mesh_path)
+                self.mesh_files.append(mesh_path)
+                self.meshes.append(mesh)
+                to_origin, extents = trimesh.bounds.oriented_bounds(mesh)
+                self.bounds.append((to_origin, extents))
+                self.bboxes.append(np.stack([-extents/2, extents/2], axis=0).reshape(2, 3))
+                self.get_logger().info(f"Added mesh: {mesh_path} ({len(mesh.vertices)} vertices)")
+            except Exception as e:
+                self.get_logger().error(f"Failed to load {mesh_path}: {e}")
+                return
+        if self.i > 0:
+            self.get_logger().info("Re-entering selection dialog")
+            self.i = 0
 
 def main(args=None):
     source_directory = "demo_data"

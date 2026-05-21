@@ -27,4 +27,4 @@ fi
 cd "$PROJ_ROOT"
 
 # Run the main script
-exec python foundationpose_ros_multi.py "$@"
+exec python foundationpose_auto.py "$@"
