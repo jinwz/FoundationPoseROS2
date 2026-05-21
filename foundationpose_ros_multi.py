@@ -180,6 +180,7 @@ class PoseEstimationNode(Node):
         depth[(depth < 0.1) | (depth >= np.inf)] = 0
 
         if self.i == 0:
+            cv2.destroyWindow('Pose Estimation & Tracking')
             masks_accepted = False
 
             while not masks_accepted:
