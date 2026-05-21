@@ -39,8 +39,7 @@ PYTHONNOUSERSITE=1 ros2 launch /opt/ros/humble/share/realsense2_camera/launch/rs
 
 ### 2. 启动 FoundationPose
 ```bash
-source /opt/ros/humble/setup.bash
-source /home/jinwz/miniconda3/bin/activate foundationpose_ros
+source /opt/ros/humble/setup.bash && source /home/jinwz/miniconda3/bin/activate foundationpose_ros
 PYTHONNOUSERSITE=1 bash run_foundationpose.sh
 ```
 
