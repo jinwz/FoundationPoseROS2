@@ -7,6 +7,7 @@ from rclpy.node import Node
 from estimater import *
 import cv2
 import numpy as np
+import torch
 import trimesh
 from sensor_msgs.msg import Image, CameraInfo
 from geometry_msgs.msg import PoseStamped
@@ -89,7 +90,7 @@ def rotation_locked(pose, axis_local):
 
 
 class AutoPoseNode(Node):
-    def __init__(self, est_iter=4, track_iter=2):
+    def __init__(self, est_iter=4, track_iter=5):
         super().__init__('foundationpose_auto')
         self.est_iter = est_iter
         self.track_iter = track_iter
@@ -172,9 +173,21 @@ class AutoPoseNode(Node):
         if extents.max() > 10:
             self.get_logger().info(f"Mesh extents {extents} appear in mm, scaling to metres")
             mesh.vertices *= 0.001
+            mesh_scale = 0.001
+        else:
+            mesh_scale = 1.0
 
         _, extents = trimesh.bounds.oriented_bounds(mesh)
         bbox = np.stack([-extents/2, extents/2], axis=0).reshape(2, 3)
+
+        # Subdivide low-polygon meshes to give FoundationPose more
+        # geometric constraints for stable tracking.
+        n_sub = 0
+        while len(mesh.vertices) < 100:
+            mesh = mesh.subdivide()
+            n_sub += 1
+        if n_sub:
+            self.get_logger().info(f"Subdivided mesh {n_sub}x → {len(mesh.vertices)} vertices")
 
         H, W = color.shape[:2]
         total_px = H * W
@@ -257,6 +270,7 @@ class AutoPoseNode(Node):
             'bbox': bbox,
             'path': path,
             'symmetry_axis': sym,
+            'mesh_scale': mesh_scale,
         }
         self._smooth_pos = None
         self._smooth_quat = None
@@ -283,6 +297,22 @@ class AutoPoseNode(Node):
         if self.current_object is not None and self.current_object['est'].is_register:
             est = self.current_object['est']
             pose = est.track_one(rgb=color, depth=depth, K=self.cam_K, iteration=self.track_iter)
+
+            # Lock symmetry axis in FoundationPose's internal state to prevent drift
+            sym = self.current_object.get('symmetry_axis')
+            if sym is None:
+                pass  # asymmetric — nothing to lock
+            elif isinstance(sym, str) and sym == 'full':
+                raw = est.pose_last.clone()  # (1,4,4) torch
+                raw_np = raw.data.cpu().numpy().reshape(4, 4)
+                out = np.eye(4)
+                out[:3, 3] = raw_np[:3, 3]
+                est.pose_last = torch.as_tensor(out, dtype=torch.float, device='cuda').reshape(1, 4, 4)
+            else:
+                raw = est.pose_last.clone()  # (1,4,4) torch
+                raw_np = raw.data.cpu().numpy().reshape(4, 4)
+                raw_locked = rotation_locked(raw_np, sym)
+                est.pose_last = torch.as_tensor(raw_locked, dtype=torch.float, device='cuda').reshape(1, 4, 4)
             if not self._pose_logged:
                 t = pose[:3, 3]
                 self.get_logger().info(f"FIRST frame pose t=({t[0]:.6f}, {t[1]:.6f}, {t[2]:.6f})")
@@ -337,26 +367,28 @@ class AutoPoseNode(Node):
         msg.pose.orientation.z = float(quat[2])
         self.pose_pub.publish(msg)
 
-        # Marker (semi-transparent bounding box)
+        # Marker (reconstructed mesh)
         marker_topic = f"{topic}_mesh"
         if self.marker_pub is None:
             self.marker_pub = self.create_publisher(Marker, marker_topic, 10)
 
-        bbox = self.current_object['bbox']
+        mesh_path = self.current_object['path']
+        mesh_scale = self.current_object['mesh_scale']
         marker = Marker()
         marker.header = msg.header
         marker.ns = topic
         marker.id = 0
-        marker.type = Marker.CUBE
+        marker.type = Marker.MESH_RESOURCE
         marker.action = Marker.ADD
         marker.pose.position = msg.pose.position
         marker.pose.orientation = msg.pose.orientation
-        marker.scale.x = float(bbox[1, 0] - bbox[0, 0])
-        marker.scale.y = float(bbox[1, 1] - bbox[0, 1])
-        marker.scale.z = float(bbox[1, 2] - bbox[0, 2])
-        marker.color.a = 0.4
-        marker.color.r = 0.2
-        marker.color.g = 0.6
+        marker.scale.x = mesh_scale
+        marker.scale.y = mesh_scale
+        marker.scale.z = mesh_scale
+        marker.mesh_resource = f"file://{mesh_path}"
+        marker.color.a = 0.6
+        marker.color.r = 0.6
+        marker.color.g = 0.8
         marker.color.b = 1.0
         self.marker_pub.publish(marker)
 
@@ -364,7 +396,7 @@ class AutoPoseNode(Node):
 def main(args=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--est_refine_iter', type=int, default=4)
-    parser.add_argument('--track_refine_iter', type=int, default=2)
+    parser.add_argument('--track_refine_iter', type=int, default=5)
     parsed = parser.parse_args()
 
     rclpy.init()
