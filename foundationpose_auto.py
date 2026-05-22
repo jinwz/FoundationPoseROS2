@@ -36,6 +36,58 @@ FoundationPose.register = modified_register
 # ---------- end monkey-patches ----------
 
 
+def detect_symmetry_axis(mesh, threshold=0.05):
+    """Auto-detect the symmetry axis of a mesh from its inertia tensor.
+    
+    Returns the symmetry axis direction (3,) as a unit vector in mesh-local
+    coordinates, or 'full' for spherical symmetry, or None if asymmetric.
+    """
+    I = mesh.moment_inertia
+    vals, vecs = np.linalg.eigh(I)
+    idx = np.argsort(vals)
+    vals = vals[idx]
+    vecs = vecs[:, idx]
+    mx = vals[-1]
+    if mx < 1e-12:
+        return None
+
+    n0, n1, n2 = vals / mx
+    close_01 = abs(n1 - n0) < threshold
+    close_12 = abs(n2 - n1) < threshold
+
+    if close_01 and not close_12:
+        return vecs[:, 2]       # disk-like: symmetric around largest-moment axis
+    if close_12 and not close_01:
+        return vecs[:, 0]       # cylinder-like: symmetric around smallest-moment axis
+    if close_01 and close_12:
+        return 'full'           # sphere-like
+    return None                 # no symmetry
+
+
+def rotation_locked(pose, axis_local):
+    """Remove rotation around the symmetry axis.
+    
+    Returns a new 4×4 pose matrix with the same symmetry-axis direction but
+    zero roll around it.
+    """
+    R = pose[:3, :3]
+    axis = R @ axis_local
+    axis = axis / np.linalg.norm(axis)
+
+    ref = np.array([1., 0., 0.])
+    if abs(np.dot(ref, axis)) > 0.9:
+        ref = np.array([0., 1., 0.])
+
+    x = np.cross(ref, axis)
+    x = x / np.linalg.norm(x)
+    y = np.cross(axis, x)
+
+    out = pose.copy()
+    out[:3, :3] = np.column_stack([x, y, axis])
+    return out
+
+
+
 class AutoPoseNode(Node):
     def __init__(self, est_iter=4, track_iter=2):
         super().__init__('foundationpose_auto')
@@ -69,6 +121,8 @@ class AutoPoseNode(Node):
         self.pose_pub = None
         self.marker_pub = None
         self._pose_logged = False
+        self._smooth_pos = None
+        self._smooth_quat = None
 
         self.get_logger().info("AutoPoseNode ready. Publish .obj path to /add_mesh to start tracking.")
 
@@ -188,11 +242,24 @@ class AutoPoseNode(Node):
             return False
 
         self.get_logger().info(f"Best mask #{best_idx+1} (score={best_score:.6f})")
+
+        # Auto-detect symmetry axis
+        sym = detect_symmetry_axis(mesh)
+        if sym is None:
+            self.get_logger().info("Mesh is asymmetric — full 6-DoF pose")
+        elif isinstance(sym, str) and sym == 'full':
+            self.get_logger().info("Mesh has full spherical symmetry — locking all rotation")
+        else:
+            self.get_logger().info(f"Mesh is symmetric around axis ({sym[0]:.4f}, {sym[1]:.4f}, {sym[2]:.4f}) — locking roll")
+
         self.current_object = {
             'est': best_est,
             'bbox': bbox,
             'path': path,
+            'symmetry_axis': sym,
         }
+        self._smooth_pos = None
+        self._smooth_quat = None
         self.pending_mesh = None
         self.get_logger().info(f"Now tracking: {path}")
         return True
@@ -225,8 +292,32 @@ class AutoPoseNode(Node):
     # ---------- output ----------
 
     def publish_pose(self, center):
+        sym = self.current_object.get('symmetry_axis')
+        if isinstance(sym, str) and sym == 'full':
+            out = np.eye(4)
+            out[:3, 3] = center[:3, 3]
+            center = out
+        elif sym is not None:
+            center = rotation_locked(center, sym)
+
         pos = center[:3, 3]
         rot = center[:3, :3]
+
+        # EMA smoothing (α=0.15)
+        alpha = 0.15
+        if self._smooth_pos is None:
+            self._smooth_pos = pos.copy()
+            self._smooth_quat = R.from_matrix(rot).as_quat()
+        else:
+            self._smooth_pos = alpha * pos + (1 - alpha) * self._smooth_pos
+            q = R.from_matrix(rot).as_quat()
+            if np.dot(self._smooth_quat, q) < 0:
+                q = -q
+            self._smooth_quat = alpha * q + (1 - alpha) * self._smooth_quat
+            self._smooth_quat /= np.linalg.norm(self._smooth_quat)
+            pos = self._smooth_pos
+            rot = R.from_quat(self._smooth_quat).as_matrix()
+
         quat = R.from_matrix(rot).as_quat()
 
         topic = "/Current_OBJ_position"
